@@ -150,33 +150,41 @@ contract LendingContract is ReentrancyGuard {
         uint256 timeElapsed = block.timestamp.sub(loan.timestamp);
         uint256 interest = calculateInterest(loan.loanAmount, timeElapsed);
         uint256 totalDue = loan.loanAmount.add(interest);
-
-        require(msg.value >= totalDue, 
-            string(abi.encodePacked(
-                "Insufficient repayment amount. Required: ", 
-                uint2str(totalDue), 
-                " wei, Sent: ",
-                uint2str(msg.value),
-                " wei"
-            ))
-        );
-
-        uint256 excess = msg.value.sub(totalDue);
         
-        // Important: Set loan to inactive before transfers to prevent reentrancy
+        require(msg.value > 0, "Must send ETH to repay loan");
+        require(msg.value >= totalDue, "Insufficient payment amount");
+
+        // Save values before deleting loan
         uint256 collateralToReturn = loan.collateralAmount;
+        uint256 loanAmountForEvent = loan.loanAmount;
+        uint256 interestForEvent = interest;
+        
+        // Clear loan data first to prevent reentrancy
         delete loans[msg.sender];
         
-        // Transfer repayment to lender
-        payable(lender).transfer(totalDue);
-        
-        // Return collateral and any excess payment in a single transfer
-        uint256 totalReturn = collateralToReturn.add(excess);
-        if (totalReturn > 0) {
-            payable(msg.sender).transfer(totalReturn);
+        // Calculate excess payment to return
+        uint256 excess = 0;
+        if (msg.value > totalDue) {
+            excess = msg.value.sub(totalDue);
         }
 
-        emit LoanRepaid(msg.sender, loan.loanAmount, interest);
+        // Process transfers
+        uint256 totalReturn = collateralToReturn.add(excess);
+        
+        bool success1;
+        bool success2;
+        
+        // Transfer repayment to lender
+        (success1,) = payable(lender).call{value: totalDue}("");
+        require(success1, "Failed to transfer repayment to lender");
+        
+        // Return collateral and excess in a single transfer
+        if (totalReturn > 0) {
+            (success2,) = payable(msg.sender).call{value: totalReturn}("");
+            require(success2, "Failed to return collateral and excess");
+        }
+
+        emit LoanRepaid(msg.sender, loanAmountForEvent, interestForEvent);
     }
 
     // Helper function to convert uint to string

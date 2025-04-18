@@ -221,28 +221,64 @@ function App() {
     try {
       setLoading(true);
       setError('');
-
-      // Get the latest repayment amount using current client-side timestamp
+      
+      // Get the latest repayment amount
       const currentTime = Math.floor(Date.now() / 1000);
       const latestRepaymentAmount = await contract.getRequiredRepaymentAmountWithTimestamp(account, currentTime);
-      console.log('Latest repayment amount (wei):', latestRepaymentAmount.toString());
-
-      const tx = await contract.repayLoan({
-        value: latestRepaymentAmount,
-      });
-      console.log('Transaction sent:', tx);
+      console.log('Repayment amount:', ethers.formatEther(latestRepaymentAmount), 'ETH');
       
+      // Check user's balance
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const balance = await provider.getBalance(account);
+      console.log('User balance:', ethers.formatEther(balance), 'ETH');
+      
+      if (balance < latestRepaymentAmount) {
+        throw new Error(`Insufficient balance. You need ${ethers.formatEther(latestRepaymentAmount)} ETH to repay the loan`);
+      }
+
+      // Split transaction into multiple steps to avoid gas issues
+      
+      // 1. Create a transaction object with proper values
+      const unsignedTx = {
+        to: contract.target,
+        from: account,
+        value: latestRepaymentAmount,
+        data: contract.interface.encodeFunctionData("repayLoan", []),
+        gasLimit: 1000000 // Use a very high gas limit
+      };
+      
+      console.log('Sending transaction with:', unsignedTx);
+      
+      // 2. Send the transaction through the provider instead
+      const signer = await provider.getSigner();
+      const tx = await signer.sendTransaction(unsignedTx);
+      
+      console.log('Transaction sent:', tx.hash);
+      
+      // 3. Wait for confirmation
       console.log('Waiting for transaction confirmation...');
       const receipt = await tx.wait();
       console.log('Transaction confirmed:', receipt);
       
+      // 4. Refresh loan state
       await loadLoanDetails(contract, account);
       setRequiredRepayment(null);
       setCurrentInterest(null);
       setElapsedTime(0);
     } catch (error) {
       console.error("Error repaying loan:", error);
-      setError(error.message);
+      
+      // Improved error handling for better user feedback
+      let errorMessage = error.message;
+      if (error.code === 'CALL_EXCEPTION') {
+        errorMessage = 'Transaction failed - contract call reverted';
+      } else if (error.code === 'INSUFFICIENT_FUNDS') {
+        errorMessage = 'You don\'t have enough ETH to pay for this transaction';
+      } else if (error.data) {
+        errorMessage = `Contract error: ${error.data}`;
+      }
+      
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }

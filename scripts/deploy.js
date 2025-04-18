@@ -10,7 +10,7 @@ async function main() {
   const LendingContract = await hre.ethers.getContractFactory("LendingContract");
   // Deploy with 100 ETH initial funding
   const lending = await LendingContract.deploy(interestRate, liquidationThreshold, {
-    value: parseEther("100")
+    value: parseEther("1000")
   });
 
   // Wait for deployment to complete
