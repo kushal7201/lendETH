@@ -15,6 +15,10 @@ function App() {
   const [requiredRepayment, setRequiredRepayment] = useState(null);
   const [currentInterest, setCurrentInterest] = useState(null);
   const [elapsedTime, setElapsedTime] = useState(0);
+  const [lenderBalance, setLenderBalance] = useState('0');
+  const [lenderInterest, setLenderInterest] = useState('0');
+  const [lendAmount, setLendAmount] = useState('');
+  const [withdrawAmount, setWithdrawAmount] = useState('');
 
   const updateRepaymentAmount = React.useCallback(async () => {
     if (contract && account && loanDetails?.active) {
@@ -110,6 +114,32 @@ function App() {
     };
   }, [contract, account, loanDetails?.active, updateRepaymentAmount]);
 
+  const loadLenderDetails = async (contract, address) => {
+    try {
+      console.log('Loading lender details for:', address);
+      
+      const [balance, interest] = await Promise.all([
+        contract.lenderBalance(address),
+        contract.getLenderInterest(address)
+      ]);
+      
+      console.log('Raw balance:', balance.toString());
+      console.log('Raw interest:', interest.toString());
+      
+      const formattedBalance = ethers.formatEther(balance);
+      const formattedInterest = ethers.formatEther(interest);
+      
+      console.log('Formatted balance:', formattedBalance, 'ETH');
+      console.log('Formatted interest:', formattedInterest, 'ETH');
+      
+      setLenderBalance(formattedBalance);
+      setLenderInterest(formattedInterest);
+    } catch (error) {
+      console.error("Error loading lender details:", error);
+      setError("Failed to load lender details: " + error.message);
+    }
+  };
+
   const loadLoanDetails = async (contract, address) => {
     try {
       console.log('Loading loan details for address:', address);
@@ -139,6 +169,8 @@ function App() {
         setCurrentInterest(null);
         setElapsedTime(0);
       }
+
+      await loadLenderDetails(contract, address);
     } catch (error) {
       console.error("Error loading loan details:", error);
       setError(error.message);
@@ -149,6 +181,8 @@ function App() {
         active: false
       });
       setRequiredRepayment(null);
+      setLenderBalance('0');
+      setLenderInterest('0');
     }
   };
 
@@ -311,6 +345,101 @@ function App() {
     }
   };
 
+  const provideLiquidity = async (e) => {
+    e.preventDefault();
+    if (!contract || !lendAmount) {
+      console.log('Missing contract or lend amount');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError('');
+      console.log('Providing liquidity:', lendAmount, 'ETH');
+      
+      // Create transaction with proper gas settings
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      
+      const tx = await contract.provideLiquidity({
+        value: ethers.parseEther(lendAmount.toString()),
+        gasLimit: 1000000 // Ensure sufficient gas
+      });
+      
+      console.log('Transaction sent:', tx.hash);
+      console.log('Waiting for transaction confirmation...');
+      const receipt = await tx.wait();
+      console.log('Transaction confirmed:', receipt);
+      
+      // Wait for a block to ensure state is updated
+      await provider.waitForTransaction(receipt.hash, 1);
+      
+      // Refresh lender details
+      await loadLenderDetails(contract, account);
+      setLendAmount('');
+      
+      // Double check balance is updated
+      const newBalance = await contract.lenderBalance(account);
+      console.log('Updated lender balance:', ethers.formatEther(newBalance), 'ETH');
+      
+    } catch (error) {
+      console.error("Error providing liquidity:", error);
+      setError(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const withdrawLiquidity = async (e) => {
+    e.preventDefault();
+    if (!contract || !withdrawAmount) {
+      console.log('Missing contract or withdraw amount');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError('');
+      console.log('Withdrawing liquidity:', withdrawAmount, 'ETH');
+      
+      const withdrawAmountWei = ethers.parseEther(withdrawAmount.toString());
+      console.log('Withdraw amount in wei:', withdrawAmountWei.toString());
+
+      // Call the contract method directly first
+      const tx = await contract.withdrawLiquidity(withdrawAmountWei);
+      console.log('Transaction sent:', tx.hash);
+      
+      console.log('Waiting for transaction confirmation...');
+      const receipt = await tx.wait();
+      console.log('Transaction confirmed:', receipt);
+      
+      // Refresh the lender's details
+      await loadLenderDetails(contract, account);
+      setWithdrawAmount('');
+      
+      // Log the updated balance
+      const newBalance = await contract.lenderBalance(account);
+      console.log('Updated lender balance:', ethers.formatEther(newBalance), 'ETH');
+      
+    } catch (error) {
+      console.error("Error withdrawing liquidity:", error);
+      
+      // Improved error handling for better user feedback
+      let errorMessage = error.message;
+      if (error.code === 'CALL_EXCEPTION') {
+        errorMessage = 'Transaction failed - contract call reverted';
+      } else if (error.code === 'INSUFFICIENT_FUNDS') {
+        errorMessage = 'You don\'t have enough ETH to pay for this transaction';
+      } else if (error.data) {
+        errorMessage = `Contract error: ${error.data.message || error.data}`;
+      }
+      
+      setError(errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="App">
       <header className="App-header">
@@ -322,10 +451,44 @@ function App() {
             Error: {error}
           </div>
         )}
-        
+
+        <div className="lender-details">
+          <h2>Lender Dashboard</h2>
+          <p>Your Balance in Pool: {lenderBalance} ETH</p>
+          <p>Earned Interest: {lenderInterest} ETH</p>
+          
+          <form onSubmit={provideLiquidity}>
+            <input
+              type="number"
+              step="0.000000000000000001"
+              value={lendAmount}
+              onChange={(e) => setLendAmount(e.target.value)}
+              placeholder="Amount to Lend (ETH)"
+              disabled={loading}
+            />
+            <button type="submit" disabled={loading}>
+              {loading ? 'Processing...' : 'Provide Liquidity'}
+            </button>
+          </form>
+
+          <form onSubmit={withdrawLiquidity}>
+            <input
+              type="number"
+              step="0.000000000000000001"
+              value={withdrawAmount}
+              onChange={(e) => setWithdrawAmount(e.target.value)}
+              placeholder="Amount to Withdraw (ETH)"
+              disabled={loading}
+            />
+            <button type="submit" disabled={loading}>
+              {loading ? 'Processing...' : 'Withdraw Liquidity'}
+            </button>
+          </form>
+        </div>
+
         {loanDetails && (
           <div className="loan-details">
-            <h2>Your Loan Details</h2>
+            <h2>Borrower Dashboard</h2>
             <p>Collateral: {loanDetails.collateralAmount} ETH</p>
             <p>Loan Amount: {loanDetails.loanAmount} ETH</p>
             <p>Status: {loanDetails.active ? 'Active🟢' : 'Inactive'}</p>

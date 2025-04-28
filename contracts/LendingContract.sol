@@ -7,6 +7,11 @@ import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 contract LendingContract is ReentrancyGuard {
     using SafeMath for uint256;
 
+    uint256 public totalPoolFunds;
+    mapping(address => uint256) public lenderBalance;
+    mapping(address => uint256) public lenderInterestEarned;
+    address[] public lenders;
+    
     struct Loan {
         uint256 collateralAmount;
         uint256 loanAmount;
@@ -15,7 +20,6 @@ contract LendingContract is ReentrancyGuard {
     }
 
     mapping(address => Loan) public loans;
-    address public lender;
     uint256 public interestRate;
     uint256 public liquidationThreshold;
     uint256 public constant SECONDS_IN_YEAR = 31536000;
@@ -27,16 +31,64 @@ contract LendingContract is ReentrancyGuard {
     event LoanTaken(address borrower, uint256 amount);
     event LoanRepaid(address borrower, uint256 amount, uint256 interest);
     event Liquidated(address borrower, uint256 collateralAmount);
+    event LiquidityProvided(address lender, uint256 amount);
+    event LiquidityWithdrawn(address lender, uint256 amount);
+    event InterestDistributed(address lender, uint256 amount);
 
-    constructor(uint256 _interestRate, uint256 _liquidationThreshold) payable {
-        lender = msg.sender;
+    constructor(uint256 _interestRate, uint256 _liquidationThreshold) {
         interestRate = _interestRate;
         liquidationThreshold = _liquidationThreshold;
+        totalPoolFunds = 0;
     }
 
-    modifier onlyLender() {
-        require(msg.sender == lender, "Only lender can perform this action");
-        _;
+    // Function for lenders to provide liquidity
+    function provideLiquidity() external payable nonReentrant {
+        require(msg.value > 0, "Must provide some ETH");
+        
+        if(lenderBalance[msg.sender] == 0) {
+            lenders.push(msg.sender);
+        }
+        
+        lenderBalance[msg.sender] = lenderBalance[msg.sender].add(msg.value);
+        totalPoolFunds = totalPoolFunds.add(msg.value);
+        
+        emit LiquidityProvided(msg.sender, msg.value);
+    }
+
+    // Function for lenders to withdraw their funds and earned interest
+    function withdrawLiquidity(uint256 amount) external nonReentrant {
+        require(lenderBalance[msg.sender] >= amount, "Insufficient balance");
+        require(totalPoolFunds >= amount, "Insufficient pool funds");
+        
+        uint256 interestEarned = lenderInterestEarned[msg.sender];
+        uint256 totalWithdraw = amount.add(interestEarned);
+        
+        // Make sure contract has enough balance for the total withdrawal
+        require(address(this).balance >= totalWithdraw, "Insufficient contract balance");
+        
+        // Update state before transfer to prevent reentrancy
+        lenderBalance[msg.sender] = lenderBalance[msg.sender].sub(amount);
+        lenderInterestEarned[msg.sender] = 0;
+        totalPoolFunds = totalPoolFunds.sub(amount);
+        
+        // Transfer the total amount (principal + interest)
+        payable(msg.sender).transfer(totalWithdraw);
+        emit LiquidityWithdrawn(msg.sender, totalWithdraw);
+    }
+
+    // Internal function to distribute interest among lenders
+    function _distributeInterest(uint256 interestAmount) internal {
+        uint256 totalDistributed = 0;
+        
+        for(uint i = 0; i < lenders.length; i++) {
+            address currentLender = lenders[i];
+            if(lenderBalance[currentLender] > 0) {
+                uint256 share = interestAmount.mul(lenderBalance[currentLender]).div(totalPoolFunds);
+                lenderInterestEarned[currentLender] = lenderInterestEarned[currentLender].add(share);
+                totalDistributed = totalDistributed.add(share);
+                emit InterestDistributed(currentLender, share);
+            }
+        }
     }
 
     function depositCollateral() external payable nonReentrant {
@@ -74,12 +126,13 @@ contract LendingContract is ReentrancyGuard {
         require(!loan.active, "Loan already active");
         require(amount <= loan.collateralAmount.mul(liquidationThreshold).div(100), 
             "Cannot borrow more than collateral threshold");
-        require(address(this).balance >= amount, "Not enough funds in contract");
+        require(totalPoolFunds >= amount, "Insufficient funds in lending pool");
 
         loan.loanAmount = amount;
         loan.timestamp = block.timestamp;
         loan.active = true;
 
+        totalPoolFunds = totalPoolFunds.sub(amount);
         payable(msg.sender).transfer(amount);
         emit LoanTaken(msg.sender, amount);
     }
@@ -168,20 +221,16 @@ contract LendingContract is ReentrancyGuard {
             excess = msg.value.sub(totalDue);
         }
 
-        // Process transfers
-        uint256 totalReturn = collateralToReturn.add(excess);
+        // Add loan amount back to total pool funds
+        totalPoolFunds = totalPoolFunds.add(loan.loanAmount);
         
-        bool success1;
-        bool success2;
-        
-        // Transfer repayment to lender
-        (success1,) = payable(lender).call{value: totalDue}("");
-        require(success1, "Failed to transfer repayment to lender");
-        
+        // Distribute interest among lenders
+        _distributeInterest(interest);
+
         // Return collateral and excess in a single transfer
+        uint256 totalReturn = collateralToReturn.add(excess);
         if (totalReturn > 0) {
-            (success2,) = payable(msg.sender).call{value: totalReturn}("");
-            require(success2, "Failed to return collateral and excess");
+            payable(msg.sender).transfer(totalReturn);
         }
 
         emit LoanRepaid(msg.sender, loanAmountForEvent, interestForEvent);
@@ -208,7 +257,7 @@ contract LendingContract is ReentrancyGuard {
         str = string(bstr);
     }
 
-    function liquidate(address borrower) external onlyLender nonReentrant {
+    function liquidate(address borrower) external nonReentrant {
         Loan storage loan = loans[borrower];
         require(loan.active, "No active loan");
         
@@ -222,7 +271,8 @@ contract LendingContract is ReentrancyGuard {
         uint256 collateralToLiquidate = loan.collateralAmount;
         delete loans[borrower];
         
-        payable(lender).transfer(collateralToLiquidate);
+        // Add liquidated collateral to the pool
+        totalPoolFunds = totalPoolFunds.add(collateralToLiquidate);
         emit Liquidated(borrower, collateralToLiquidate);
     }
 
@@ -239,6 +289,11 @@ contract LendingContract is ReentrancyGuard {
             loan.timestamp,
             loan.active
         );
+    }
+
+    // Add function to view lender's earned interest
+    function getLenderInterest(address _lender) external view returns (uint256) {
+        return lenderInterestEarned[_lender];
     }
 
     // Allow contract to receive ETH
