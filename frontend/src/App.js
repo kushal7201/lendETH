@@ -19,6 +19,7 @@ function App() {
   const [lenderInterest, setLenderInterest] = useState('0');
   const [lendAmount, setLendAmount] = useState('');
   const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [totalPoolFunds, setTotalPoolFunds] = useState('0');
 
   const updateRepaymentAmount = React.useCallback(async () => {
     if (contract && account && loanDetails?.active) {
@@ -116,27 +117,21 @@ function App() {
 
   const loadLenderDetails = async (contract, address) => {
     try {
-      console.log('Loading lender details for:', address);
-      
-      const [balance, interest] = await Promise.all([
-        contract.lenderBalance(address),
-        contract.getLenderInterest(address)
-      ]);
-      
-      console.log('Raw balance:', balance.toString());
-      console.log('Raw interest:', interest.toString());
-      
-      const formattedBalance = ethers.formatEther(balance);
-      const formattedInterest = ethers.formatEther(interest);
-      
-      console.log('Formatted balance:', formattedBalance, 'ETH');
-      console.log('Formatted interest:', formattedInterest, 'ETH');
-      
-      setLenderBalance(formattedBalance);
-      setLenderInterest(formattedInterest);
+      const balance = await contract.lenderBalance(address);
+      const interest = await contract.getLenderInterest(address);
+      setLenderBalance(ethers.formatEther(balance));
+      setLenderInterest(ethers.formatEther(interest));
     } catch (error) {
       console.error("Error loading lender details:", error);
-      setError("Failed to load lender details: " + error.message);
+    }
+  };
+
+  const loadTotalPoolFunds = async (contract) => {
+    try {
+      const total = await contract.totalPoolFunds();
+      setTotalPoolFunds(ethers.formatEther(total));
+    } catch (error) {
+      console.error("Error loading total pool funds:", error);
     }
   };
 
@@ -171,6 +166,7 @@ function App() {
       }
 
       await loadLenderDetails(contract, address);
+      await loadTotalPoolFunds(contract);
     } catch (error) {
       console.error("Error loading loan details:", error);
       setError(error.message);
@@ -183,6 +179,7 @@ function App() {
       setRequiredRepayment(null);
       setLenderBalance('0');
       setLenderInterest('0');
+      setTotalPoolFunds('0');
     }
   };
 
@@ -270,31 +267,32 @@ function App() {
         throw new Error(`Insufficient balance. You need ${ethers.formatEther(latestRepaymentAmount)} ETH to repay the loan`);
       }
 
-      // Split transaction into multiple steps to avoid gas issues
-      
-      // 1. Create a transaction object with proper values
-      const unsignedTx = {
+      // Estimate gas first
+      const gasEstimate = await provider.estimateGas({
         to: contract.target,
         from: account,
         value: latestRepaymentAmount,
-        data: contract.interface.encodeFunctionData("repayLoan", []),
-        gasLimit: 1000000 // Use a very high gas limit
-      };
-      
-      console.log('Sending transaction with:', unsignedTx);
-      
-      // 2. Send the transaction through the provider instead
-      const signer = await provider.getSigner();
-      const tx = await signer.sendTransaction(unsignedTx);
+        data: contract.interface.encodeFunctionData("repayLoan", [])
+      });
+
+      // Add 20% buffer to gas estimate
+      const gasLimit = gasEstimate * BigInt(12) / BigInt(10);
+
+      console.log('Estimated gas:', gasEstimate.toString());
+      console.log('Using gas limit:', gasLimit.toString());
+
+      // Create and send the transaction
+      const tx = await contract.repayLoan({
+        value: latestRepaymentAmount,
+        gasLimit: gasLimit
+      });
       
       console.log('Transaction sent:', tx.hash);
       
-      // 3. Wait for confirmation
       console.log('Waiting for transaction confirmation...');
       const receipt = await tx.wait();
       console.log('Transaction confirmed:', receipt);
       
-      // 4. Refresh loan state
       await loadLoanDetails(contract, account);
       setRequiredRepayment(null);
       setCurrentInterest(null);
@@ -305,11 +303,11 @@ function App() {
       // Improved error handling for better user feedback
       let errorMessage = error.message;
       if (error.code === 'CALL_EXCEPTION') {
-        errorMessage = 'Transaction failed - contract call reverted';
+        errorMessage = 'Transaction failed. This could be due to insufficient gas or contract requirements not being met.';
       } else if (error.code === 'INSUFFICIENT_FUNDS') {
-        errorMessage = 'You don\'t have enough ETH to pay for this transaction';
+        errorMessage = 'You don\'t have enough ETH to pay for this transaction and gas fees';
       } else if (error.data) {
-        errorMessage = `Contract error: ${error.data}`;
+        errorMessage = `Contract error: ${error.data.message || error.data}`;
       }
       
       setError(errorMessage);
@@ -357,31 +355,17 @@ function App() {
       setError('');
       console.log('Providing liquidity:', lendAmount, 'ETH');
       
-      // Create transaction with proper gas settings
-      const provider = new ethers.BrowserProvider(window.ethereum);
-      const signer = await provider.getSigner();
-      
       const tx = await contract.provideLiquidity({
-        value: ethers.parseEther(lendAmount.toString()),
-        gasLimit: 1000000 // Ensure sufficient gas
+        value: ethers.parseEther(lendAmount.toString())
       });
+      console.log('Transaction sent:', tx);
       
-      console.log('Transaction sent:', tx.hash);
       console.log('Waiting for transaction confirmation...');
       const receipt = await tx.wait();
       console.log('Transaction confirmed:', receipt);
       
-      // Wait for a block to ensure state is updated
-      await provider.waitForTransaction(receipt.hash, 1);
-      
-      // Refresh lender details
       await loadLenderDetails(contract, account);
       setLendAmount('');
-      
-      // Double check balance is updated
-      const newBalance = await contract.lenderBalance(account);
-      console.log('Updated lender balance:', ethers.formatEther(newBalance), 'ETH');
-      
     } catch (error) {
       console.error("Error providing liquidity:", error);
       setError(error.message);
@@ -402,39 +386,18 @@ function App() {
       setError('');
       console.log('Withdrawing liquidity:', withdrawAmount, 'ETH');
       
-      const withdrawAmountWei = ethers.parseEther(withdrawAmount.toString());
-      console.log('Withdraw amount in wei:', withdrawAmountWei.toString());
-
-      // Call the contract method directly first
-      const tx = await contract.withdrawLiquidity(withdrawAmountWei);
-      console.log('Transaction sent:', tx.hash);
+      const tx = await contract.withdrawLiquidity(ethers.parseEther(withdrawAmount.toString()));
+      console.log('Transaction sent:', tx);
       
       console.log('Waiting for transaction confirmation...');
       const receipt = await tx.wait();
       console.log('Transaction confirmed:', receipt);
       
-      // Refresh the lender's details
       await loadLenderDetails(contract, account);
       setWithdrawAmount('');
-      
-      // Log the updated balance
-      const newBalance = await contract.lenderBalance(account);
-      console.log('Updated lender balance:', ethers.formatEther(newBalance), 'ETH');
-      
     } catch (error) {
       console.error("Error withdrawing liquidity:", error);
-      
-      // Improved error handling for better user feedback
-      let errorMessage = error.message;
-      if (error.code === 'CALL_EXCEPTION') {
-        errorMessage = 'Transaction failed - contract call reverted';
-      } else if (error.code === 'INSUFFICIENT_FUNDS') {
-        errorMessage = 'You don\'t have enough ETH to pay for this transaction';
-      } else if (error.data) {
-        errorMessage = `Contract error: ${error.data.message || error.data}`;
-      }
-      
-      setError(errorMessage);
+      setError(error.message);
     } finally {
       setLoading(false);
     }
@@ -445,6 +408,7 @@ function App() {
       <header className="App-header">
         <h1>LendETH: Lending Platform</h1>
         <p>Connected Account: {account}</p>
+        <p className="total-pool">Total Pool Funds: {totalPoolFunds} ETH</p>
         
         {error && (
           <div className="error-message">

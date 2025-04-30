@@ -1,2 +1,2 @@
-export const CONTRACT_ADDRESS = '0xB7f8BC63BbcaD18155201308C8f3540b07f84F5e';
+export const CONTRACT_ADDRESS = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
 export const CHAIN_ID = '31337'; // Local Hardhat network

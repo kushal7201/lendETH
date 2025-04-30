@@ -125,6 +125,16 @@ button:disabled {
   margin: 10px 0;
 }
 
+.total-pool {
+  background-color: rgba(255, 255, 255, 0.05);
+  padding: 10px 20px;
+  border-radius: 5px;
+  border: 1px solid #4CAF50;
+  margin: 10px 0;
+  font-size: 1.2em;
+  font-weight: bold;
+}
+
 p {
   margin: 8px 0;
 }

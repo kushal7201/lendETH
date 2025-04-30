@@ -25,7 +25,14 @@
     "extends": [
       "react-app",
       "react-app/jest"
-    ]
+    ],
+    "env": {
+      "browser": true,
+      "es2020": true
+    },
+    "globals": {
+      "BigInt": "readonly"
+    }
   },
   "browserslist": {
     "production": [

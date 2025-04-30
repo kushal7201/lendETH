@@ -2,7 +2,7 @@ const hre = require("hardhat");
 
 async function main() {
   // Interest rate of 10% (1000 basis points)
-  const interestRate = 1000000000;
+  const interestRate = 10000000;
   // Liquidation threshold of 75%
   const liquidationThreshold = 75;
 

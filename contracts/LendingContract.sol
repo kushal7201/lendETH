@@ -57,21 +57,16 @@ contract LendingContract is ReentrancyGuard {
 
     // Function for lenders to withdraw their funds and earned interest
     function withdrawLiquidity(uint256 amount) external nonReentrant {
-        require(lenderBalance[msg.sender] >= amount, "Insufficient balance");
+        // require(lenderBalance[msg.sender] >= amount, "Insufficient balance");
         require(totalPoolFunds >= amount, "Insufficient pool funds");
         
         uint256 interestEarned = lenderInterestEarned[msg.sender];
         uint256 totalWithdraw = amount.add(interestEarned);
         
-        // Make sure contract has enough balance for the total withdrawal
-        require(address(this).balance >= totalWithdraw, "Insufficient contract balance");
-        
-        // Update state before transfer to prevent reentrancy
         lenderBalance[msg.sender] = lenderBalance[msg.sender].sub(amount);
         lenderInterestEarned[msg.sender] = 0;
         totalPoolFunds = totalPoolFunds.sub(amount);
         
-        // Transfer the total amount (principal + interest)
         payable(msg.sender).transfer(totalWithdraw);
         emit LiquidityWithdrawn(msg.sender, totalWithdraw);
     }
@@ -211,6 +206,7 @@ contract LendingContract is ReentrancyGuard {
         uint256 collateralToReturn = loan.collateralAmount;
         uint256 loanAmountForEvent = loan.loanAmount;
         uint256 interestForEvent = interest;
+        uint256 principalAmount = loan.loanAmount;
         
         // Clear loan data first to prevent reentrancy
         delete loans[msg.sender];
@@ -221,8 +217,11 @@ contract LendingContract is ReentrancyGuard {
             excess = msg.value.sub(totalDue);
         }
 
-        // Add loan amount back to total pool funds
-        totalPoolFunds = totalPoolFunds.add(loan.loanAmount);
+        // First add principal back to total pool funds
+        totalPoolFunds = totalPoolFunds.add(principalAmount);
+        
+        // Then add interest to total pool funds before distribution
+        totalPoolFunds = totalPoolFunds.add(interest);
         
         // Distribute interest among lenders
         _distributeInterest(interest);
